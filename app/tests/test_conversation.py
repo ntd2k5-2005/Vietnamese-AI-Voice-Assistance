@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+import threading
+import time
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+
+from voice_app.conversation import InMemoryConversationHistory, TurnState
+from voice_app.web import TurnManager, _same_origin, create_app
+
+
+def test_history_is_isolated_and_only_completed_turns_reach_the_prompt():
+    store = InMemoryConversationHistory()
+    first = store.create()
+    second = store.create()
+    turn = store.begin_turn(first.conversation_id, "t1")
+    assert turn.generation == 1
+    store.transition(first.conversation_id, "t1", TurnState.RETRIEVING, user_text="Xin chào")
+    store.transition(first.conversation_id, "t1", TurnState.THINKING)
+    store.transition(
+        first.conversation_id,
+        "t1",
+        TurnState.COMPLETED,
+        assistant_text="Chào bạn",
+        sources=[{"document_id": "welcome"}],
+    )
+
+    assert [message.content for message in store.messages(first.conversation_id, 3)] == [
+        "Xin chào",
+        "Chào bạn",
+    ]
+    assert store.messages(second.conversation_id, 3) == []
+
+
+def test_conversation_rejects_overlapping_turn_and_invalid_transition():
+    store = InMemoryConversationHistory()
+    conversation = store.create()
+    store.begin_turn(conversation.conversation_id, "active")
+    with pytest.raises(RuntimeError, match="active turn"):
+        store.begin_turn(conversation.conversation_id, "overlap")
+    with pytest.raises(RuntimeError, match="invalid turn transition"):
+        store.transition(conversation.conversation_id, "active", TurnState.COMPLETED)
+
+
+class _Pipeline:
+    def __init__(self) -> None:
+        self.histories: list[list[str]] = []
+
+    def stream_turn(self, *, query_text, history, cancel_event, **_kwargs):
+        self.histories.append([message.content for message in history])
+        yield {"type": "stage", "stage": "rag"}
+        yield {"type": "transcript_ready", "transcript": query_text}
+        yield {"type": "prepared", "transcript": query_text, "sources": [{"document_id": "doc"}]}
+        yield {"type": "llm_delta", "answer": f"Trả lời {query_text}"}
+        yield {"type": "pcm", "raw": np.zeros(16, dtype="<f4").tobytes(), "chunk_index": 1}
+        yield {
+            "type": "done",
+            "transcript": query_text,
+            "answer": f"Trả lời {query_text}",
+            "sources": [{"document_id": "doc"}],
+        }
+
+
+class _CancelledPipeline:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+
+    def stream_turn(self, *, query_text, cancel_event, **_kwargs):
+        yield {"type": "stage", "stage": "rag"}
+        yield {"type": "transcript_ready", "transcript": query_text}
+        yield {"type": "prepared", "transcript": query_text, "sources": []}
+        self.started.set()
+        assert cancel_event.wait(2)
+        # Simulate an uncooperative downstream yielding stale work. The manager
+        # is the final ownership gate and must discard both control and PCM.
+        yield {"type": "llm_delta", "answer": "stale"}
+        yield {"type": "pcm", "raw": np.zeros(16, dtype="<f4").tobytes(), "chunk_index": 1}
+        yield {"type": "done", "transcript": query_text, "answer": "stale", "sources": []}
+
+
+def _manager(pipeline):
+    settings = SimpleNamespace(
+        max_history_turns=3,
+        tts_audio_queue_max=4,
+    )
+    orchestrator = SimpleNamespace(settings=settings)
+    manager = TurnManager(orchestrator)
+    manager.pipeline = pipeline
+    return manager
+
+
+def test_manager_supplies_multi_turn_history_and_provenance():
+    pipeline = _Pipeline()
+    manager = _manager(pipeline)
+    first = manager.start(query_text="Một")
+    assert first.finished.wait(2)
+    second = manager.start(conversation_id=first.conversation_id, query_text="Hai")
+    assert second.finished.wait(2)
+
+    assert pipeline.histories == [[], ["Một", "Trả lời Một"]]
+    conversation = manager.history.get(first.conversation_id).as_dict()
+    assert [turn["state"] for turn in conversation["turns"]] == ["completed", "completed"]
+    assert conversation["turns"][0]["sources"] == [{"document_id": "doc"}]
+
+
+def test_barge_in_cancellation_discards_stale_events_and_audio():
+    pipeline = _CancelledPipeline()
+    manager = _manager(pipeline)
+    session = manager.start(query_text="Lượt cũ")
+    assert pipeline.started.wait(2)
+
+    manager.cancel(session.turn_id, reason="barge_in")
+    assert session.finished.wait(2)
+    turn = manager.history.get(session.conversation_id).turns[0]
+    assert turn.state == TurnState.INTERRUPTED
+    assert turn.assistant_text == ""
+
+    logged_types = [event["type"] for event in session.event_log]
+    assert "interrupted" in logged_types
+    assert "llm_delta" not in logged_types
+    assert "pcm" not in logged_types
+    assert session.audio_queue.get_nowait() is None
+
+
+def test_control_event_log_can_resume_after_a_cursor():
+    pipeline = _Pipeline()
+    manager = _manager(pipeline)
+    session = manager.start(query_text="reconnect")
+    assert session.finished.wait(2)
+    first = manager.next_event(session, 0, 0)
+    assert first is not None
+    second = manager.next_event(session, first["event_sequence"], 0)
+    assert second is not None
+    assert second["event_sequence"] == first["event_sequence"] + 1
+
+
+def test_audio_log_replays_by_chunk_cursor_without_competing_consumers():
+    manager = _manager(_Pipeline())
+    session = manager.start(query_text="media reconnect")
+    assert session.finished.wait(2)
+    first_reader = manager.next_audio(session, 0, 0)
+    retry_reader = manager.next_audio(session, 0, 0)
+    assert first_reader is not None and retry_reader is not None
+    assert first_reader.meta["chunk_index"] == retry_reader.meta["chunk_index"] == 1
+    assert manager.next_audio(session, 1, 0) is None
+
+
+def test_public_conversation_and_turn_contract():
+    app = create_app()
+    app.state.turn_manager.pipeline = _Pipeline()
+    with TestClient(app) as client:
+        created = client.post("/api/conversations")
+        assert created.status_code == 200
+        conversation_id = created.json()["conversation_id"]
+
+        started = client.post(
+            "/api/turn/text",
+            json={"conversation_id": conversation_id, "query": "Vietnamese Voice AI?"},
+        )
+        assert started.status_code == 200
+        info = started.json()
+        assert info["conversation_id"] == conversation_id
+        assert info["generation"] == 1
+
+        turn = client.get(f"/api/turn/{info['turn_id']}")
+        assert turn.status_code == 200
+        assert turn.json()["state"] == "completed"
+        assert turn.json()["sources"] == [{"document_id": "doc"}]
+
+        conversation = client.get(f"/api/conversations/{conversation_id}")
+        assert conversation.status_code == 200
+        assert conversation.json()["turns"][0]["assistant_text"] == "Trả lời Vietnamese Voice AI?"
+
+        reset = client.delete(f"/api/conversations/{conversation_id}")
+        assert reset.status_code == 200
+        assert client.get(f"/api/conversations/{conversation_id}").status_code == 404
+
+
+def test_public_cancel_contract_is_idempotent_and_interrupts():
+    app = create_app()
+    pipeline = _CancelledPipeline()
+    app.state.turn_manager.pipeline = pipeline
+    with TestClient(app) as client:
+        conversation_id = client.post("/api/conversations").json()["conversation_id"]
+        started = client.post(
+            "/api/turn/text",
+            json={"conversation_id": conversation_id, "query": "Lượt đang chạy"},
+        ).json()
+        assert pipeline.started.wait(2)
+        response = client.post(
+            f"/api/turn/{started['turn_id']}/cancel",
+            json={"reason": "barge_in"},
+        )
+        assert response.status_code == 200
+        assert response.json()["state"] == "interrupted"
+        repeated = client.post(
+            f"/api/turn/{started['turn_id']}/cancel",
+            json={"reason": "barge_in"},
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["state"] == "interrupted"
+
+
+def test_browser_mutations_and_websockets_require_same_origin():
+    assert _same_origin({"host": "demo.example", "origin": "https://demo.example"})
+    assert _same_origin({"host": "127.0.0.1:7860"})
+    assert not _same_origin({"host": "demo.example", "origin": "https://evil.example"})
+    app = create_app()
+    with TestClient(app) as client:
+        rejected = client.post(
+            "/api/conversations",
+            headers={"Origin": "https://evil.example"},
+        )
+        assert rejected.status_code == 403

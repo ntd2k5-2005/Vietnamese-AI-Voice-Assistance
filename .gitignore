@@ -1,0 +1,34 @@
+.venv/
+.venvs/
+orther/
+.env
+.env.*
+!.env.example
+.logs/
+*.log
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local model/runtime data
+models/
+services/**/models/
+.rag_runtime/
+.runtime/
+.runtime_data/
+.model_cache/
+services/rag/.rag_runtime/
+.runtime/
+voice_app_audio/
+*.wav
+
+# IDE/OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
