@@ -4,6 +4,7 @@ import time
 
 import httpx
 import numpy as np
+import pytest
 
 from voice_app.clients.llm import LLMClient
 from voice_app.clients.rag import RAGClient
@@ -104,7 +105,8 @@ def test_tts_stream_client_pcm_path_skips_per_chunk_wav_wrapping():
     client.close()
 
 
-def test_v10_native_pcm_trace_survives_coalesced_http_reads():
+@pytest.mark.parametrize("backend", ["onnx", "pytorch"])
+def test_v10_native_pcm_trace_survives_coalesced_http_reads(backend):
     header = struct.Struct("<4sIIIQQ")
     now = time.time_ns()
     raw1 = (np.ones(240, dtype="<f4") * 0.1).tobytes()
@@ -120,7 +122,7 @@ def test_v10_native_pcm_trace_survives_coalesced_http_reads():
             headers={
                 "content-type": "application/octet-stream",
                 "X-Audio-Streaming": "frame-pcm",
-                "X-TTS-Backend": "onnx",
+                "X-TTS-Backend": backend,
                 "X-TTS-Profile": "realtime",
                 "X-TTS-Trace-Protocol": "tts1-f32",
             },

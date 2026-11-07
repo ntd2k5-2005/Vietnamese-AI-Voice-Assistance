@@ -1,4 +1,4 @@
-const ASSET_VERSION = "9d4c82";
+const ASSET_VERSION = "d82a41";
 const $ = (id) => document.getElementById(id);
 
 let audioCtx = null;
@@ -22,6 +22,28 @@ let cancelledTurns = new Set();
 let pcmTraceBySequence = new Map();
 let assistantNodes = new Map();
 let lastRawMetrics = {};
+let spokenUnits = new Map();
+let spokenFrames = 0;
+let finalAnswer = "";
+let turnFailure = null;
+
+function revealSpokenText() {
+  if (!currentTurn) return;
+  const parts = [];
+  for (const unit of [...spokenUnits.values()].sort((a, b) => a.index - b.index)) {
+    if (unit.startFrame == null || !unit.totalFrames || !unit.text) break;
+    const progress = Math.max(0, Math.min(1, (spokenFrames - unit.startFrame) / unit.totalFrames));
+    const chars = Array.from(unit.text);
+    parts.push(chars.slice(0, Math.floor(chars.length * progress)).join(""));
+    if (progress < 1) break;
+  }
+  updateAssistant(currentTurn, parts.join(" "));
+}
+
+function speechUnit(index) {
+  if (!spokenUnits.has(index)) spokenUnits.set(index, { index, text: "", startFrame: null, totalFrames: 0 });
+  return spokenUnits.get(index);
+}
 
 let micStream = null;
 let micSource = null;
@@ -87,6 +109,7 @@ function setText(id, value) { const el = $(id); if (el) el.textContent = value; 
 
 function friendlyError(error) {
   const raw = String(error?.message || error || "Lỗi không xác định");
+  if (/<(?:!doctype|html|head|body)\b/i.test(raw)) return "Kết nối dịch vụ quá hạn hoặc đang gián đoạn. Vui lòng thử lại.";
   try {
     const parsed = JSON.parse(raw);
     return parsed.detail || raw;
@@ -177,6 +200,9 @@ function setTurnBusy(value) {
 }
 
 function resetPlayback(epoch = ++playbackEpoch) {
+  spokenUnits = new Map();
+  spokenFrames = 0;
+  finalAnswer = "";
   bm = browserMetrics();
   pcmTraceBySequence = new Map();
   setText("bufferAhead", "0 ms");
@@ -189,6 +215,7 @@ function resetPlayback(epoch = ++playbackEpoch) {
 }
 
 function flushPlayback(detectedAt = performance.now()) {
+  spokenUnits.clear();
   playbackDrained = true;
   playbackDrainWaiter?.();
   playbackEpoch += 1;
@@ -207,6 +234,10 @@ async function ensureAudioWorklet(sampleRate = 48000) {
   if (!audioCtx) {
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
     audioCtx = new AudioContextCtor({ sampleRate });
+  }
+  // Resume inside the user's click/microphone gesture, before HTTP awaits.
+  const resumed = audioCtx.state !== "running" ? audioCtx.resume() : Promise.resolve();
+  if (!pcmNode) {
     await audioCtx.audioWorklet.addModule(`/assets/pcm-player-worklet.js?${ASSET_VERSION}`);
     pcmNode = new AudioWorkletNode(audioCtx, "pcm-player-v10", {
       numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1],
@@ -214,7 +245,7 @@ async function ensureAudioWorklet(sampleRate = 48000) {
     pcmNode.connect(audioCtx.destination);
     pcmNode.port.onmessage = (event) => handleWorkletMessage(event.data || {});
   }
-  if (audioCtx.state !== "running") await audioCtx.resume();
+  await resumed;
   bm.audio_context_sample_rate = audioCtx.sampleRate;
   pcmNode.port.postMessage({ type: "config", prebufferMs, rebufferMs, epoch: playbackEpoch });
   return audioCtx;
@@ -234,7 +265,7 @@ function handleWorkletMessage(msg) {
   } else if (msg.type === "started") {
     if (bm.first_audio_scheduled_ms === null) bm.first_audio_scheduled_ms = nowTurnMs();
     if (bm.first_audio_started_estimate_ms === null) bm.first_audio_started_estimate_ms = nowTurnMs();
-    setStatus("Đang nói… Bạn có thể ngắt lời khi dùng VAD.", "speaking");
+    setStatus("Đang đọc câu trả lời…", "speaking");
   } else if (msg.type === "rebuffering") {
     setStatus("TTS đang đệm lại âm thanh…", "speaking");
   } else if (msg.type === "resumed") {
@@ -250,6 +281,8 @@ function handleWorkletMessage(msg) {
     }
   }
   if (["metrics", "started", "rebuffering", "resumed"].includes(msg.type)) {
+    spokenFrames = Math.max(spokenFrames, Number(msg.cumulativeConsumedFrames || 0));
+    revealSpokenText();
     const frames = Number(msg.bufferedFrames || 0);
     const aheadMs = frames / audioCtx.sampleRate * 1000;
     setText("bufferAhead", `${Math.round(aheadMs)} ms`);
@@ -265,6 +298,7 @@ function handleWorkletMessage(msg) {
     setText("mUnderrun", `${bm.underrun_count} / ${bm.rebuffer_count}`);
   }
   if (msg.type === "drained") {
+    if (currentTurn && finalAnswer) updateAssistant(currentTurn, finalAnswer);
     playbackDrained = true;
     micResumeAt = performance.now() + 300;
     playbackDrainWaiter?.();
@@ -350,6 +384,8 @@ async function streamAudio(turnId, generation, epoch, sampleRate) {
           previousReceiveMs = receivedMs;
           bm.max_browser_receive_gap_ms = Math.max(bm.max_browser_receive_gap_ms, arrivalGapMs);
           cumulativeFrames += frameCount;
+          const unit = speechUnit(unitIndex);
+          if (unit.startFrame === null) unit.startFrame = cumulativeFrames - frameCount;
           if (stageNs[0] > 0n) {
             if (firstProducerNs === null) firstProducerNs = stageNs[0];
             latestProducerNs = stageNs[0];
@@ -377,7 +413,7 @@ async function streamAudio(turnId, generation, epoch, sampleRate) {
         ws.onerror = () => reject(new Error("WebSocket audio lỗi"));
         ws.onclose = (event) => {
           if (currentAudioSocket === ws) currentAudioSocket = null;
-          if (!cleanEnd && event.code !== 1000) reject(new Error(`WebSocket audio đóng (${event.code})`));
+          if (!cleanEnd) reject(new Error(`WebSocket audio đóng trước khi hết lượt (${event.code})`));
         };
       });
       if (ended) break;
@@ -414,15 +450,23 @@ function handleEvent(event, turnId, generation) {
     renderSources(turnId, event.sources || []);
     setStatus("Đã có ngữ cảnh · LLM đang stream…", "thinking");
   } else if (kind === "llm_delta") {
-    updateAssistant(turnId, event.answer || "");
+    finalAnswer = event.answer || finalAnswer;
   } else if (kind === "speech_unit_queued") {
+    speechUnit(Number(event.unit_index)).text = event.speech_text || "";
     if ($("mSentence")?.textContent === "—") setText("mSentence", fmtMs(event.queued_ms));
   } else if (kind === "tts_unit_start") {
     if ($("mTtsStart")?.textContent === "—") setText("mTtsStart", fmtMs(event.started_ms));
   } else if (kind === "pcm") {
     if ($("mFirstPcm")?.textContent === "—") setText("mFirstPcm", fmtMs(event.server_arrival_ms));
   } else if (kind === "llm_done") {
+    finalAnswer = event.answer || finalAnswer;
+    if (bm.first_pcm_received_ms === null) setStatus("Đang chuẩn bị giọng đọc…", "thinking");
     setText("mLlmDone", fmtMs(event.meta?.pipeline_done_ms));
+  } else if (kind === "tts_unit_done") {
+    const unit = speechUnit(Number(event.unit));
+    unit.text = event.speech_text || unit.text;
+    unit.totalFrames = Math.round(Number(event.audio_duration_ms || 0) * (audioCtx?.sampleRate || 48000) / 1000);
+    revealSpokenText();
   } else if (kind === "tts_done") {
     lastRawMetrics = event.meta || {};
     if (event.final_audio) {
@@ -431,7 +475,8 @@ function handleEvent(event, turnId, generation) {
     }
   } else if (kind === "done") {
     serverTurnDone = true;
-    updateAssistant(turnId, event.answer || "");
+    finalAnswer = event.answer || finalAnswer;
+    if (playbackDrained) updateAssistant(turnId, finalAnswer);
     renderSources(turnId, event.sources || []);
     lastRawMetrics = event.details?.tts || lastRawMetrics;
     setText("rawMetrics", [
@@ -444,7 +489,9 @@ function handleEvent(event, turnId, generation) {
   } else if (kind === "cancelled" || kind === "interrupted") {
     setStatus(kind === "interrupted" ? "Đã ngắt lượt cũ · đang nghe câu mới…" : "Đã dừng lượt trả lời.", "interrupted");
   } else if (kind === "error") {
-    setStatus(`${event.stage}: ${event.error}`, "error");
+    turnFailure = friendlyError(event.error);
+    if (finalAnswer) updateAssistant(turnId, finalAnswer);
+    setStatus(`Không thể hoàn tất giọng đọc: ${friendlyError(event.error)}`, "error");
   }
 }
 
@@ -470,7 +517,7 @@ async function connectControl(turnId, generation) {
         ws.onclose = (event) => {
           clearTimeout(timer);
           if (currentControlSocket === ws) currentControlSocket = null;
-          if (clean || event.code === 1000) resolve(true);
+          if (clean) resolve(true);
           else reject(new Error(`Control WebSocket đóng (${event.code})`));
         };
       });
@@ -542,6 +589,7 @@ async function interruptCurrentTurn(reason = "user_cancelled", detectedAt = null
   try {
     const response = await fetch(`/api/turn/${encodeURIComponent(turnId)}/cancel`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }),
+      signal: AbortSignal.timeout(8000),
     });
     if (!response.ok && response.status !== 409) throw new Error(await response.text());
   } catch (error) {
@@ -550,6 +598,7 @@ async function interruptCurrentTurn(reason = "user_cancelled", detectedAt = null
 }
 
 function resetTurnTelemetry(epoch) {
+  turnFailure = null;
   playbackDrained = false;
   resetPlayback(epoch);
   serverTurnDone = false;
@@ -571,6 +620,7 @@ async function startTurn(fetcher, userText = "") {
   setStatus("Đang tạo lượt hội thoại…", "thinking");
 
   try {
+    await ensureAudioWorklet(48000);
     await ensureConversation();
     if (token !== requestToken) return;
     const response = await fetcher(conversationId);
@@ -599,6 +649,7 @@ async function startTurn(fetcher, userText = "") {
     if (token !== requestToken || cancelledTurns.has(info.turn_id)) return;
     const failed = results.find((result) => result.status === "rejected");
     if (failed) throw failed.reason;
+    if (turnFailure) throw new Error(turnFailure);
     // Network EOF means all samples arrived, not that the speaker finished.
     // Keep turn ownership until the actual worklet has consumed its FIFO.
     if (owns(info.turn_id, info.generation) && !playbackDrained) {
@@ -615,7 +666,12 @@ async function startTurn(fetcher, userText = "") {
       });
     }
   } catch (error) {
-    if (token === requestToken) flushPlayback();
+    if (token === requestToken) {
+      if (currentTurn && finalAnswer) updateAssistant(currentTurn, finalAnswer);
+      flushPlayback();
+      currentControlSocket?.close(4001, "failed");
+      currentAudioSocket?.close(4001, "failed");
+    }
     throw error;
   } finally {
     if (token === requestToken) {
@@ -897,7 +953,8 @@ async function refreshKnowledge() {
       const item = document.createElement("div");
       item.className = "doc";
       const left = document.createElement("div");
-      left.innerHTML = `<strong>${escapeHtml(doc.document_id || "")}</strong><br><small>${escapeHtml(doc.filename || "")} · ${Number(doc.chunk_count || 0)} chunks · ${escapeHtml(doc.status || "")}</small>`;
+      const state = {active: "Đang sử dụng", ready: "Sẵn sàng", indexed: "Đã xử lý", failed: "Xử lý thất bại", error: "Có lỗi", indexing: "Đang xử lý"}[doc.status] || "Chưa sẵn sàng";
+      left.innerHTML = `<strong>${escapeHtml(doc.document_id || "")}</strong><br><small>${escapeHtml(doc.filename || "")} · ${Number(doc.chunk_count || 0)} đoạn nội dung · ${state}</small>`;
       const del = document.createElement("button");
       del.type = "button"; del.textContent = "Xóa";
       del.onclick = async () => {

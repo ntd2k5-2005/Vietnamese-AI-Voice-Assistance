@@ -528,6 +528,10 @@ class V10MediaPipeline:
                 and control_q.empty()
             ):
                 break
+            # A cancelled producer may be unable to enqueue its EOF sentinel
+            # into a full media queue. Once drained, do not wait for it forever.
+            if cancelled() and tts_done.is_set() and media_q.empty():
+                media_source_done = True
             if not progressed:
                 time.sleep(0.002)
 

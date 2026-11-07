@@ -69,13 +69,15 @@
       "kind": "text_to_speech",
       "model_id": "vieneu-v3turbo",
       "revision": null,
-      "runtime": "vieneu.onnx",
+      "runtime": "vieneu.v3turbo",
       "upstream_repository": "https://github.com/pnnbao97/VieNeu-TTS.git",
       "upstream_commit": "36c4b501b0634a8f59805e6b529a058fbd30190b",
       "backbone_model_id": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
       "backbone_revision": "2da0efab622a1722125991736524f080b751ef5b",
       "codec_model_id": "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX",
       "codec_revision": "ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae",
+      "gpu_codec_model_id": "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano",
+      "gpu_codec_revision": "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
       "quantization": null,
       "artifact_store": "vieneu-managed"
     }

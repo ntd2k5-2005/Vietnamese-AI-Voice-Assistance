@@ -62,6 +62,11 @@ UV_PROJECT_ENVIRONMENT="$VENVS/tts" UV_PYTHON="$PYTHON_VERSION" "$UV" sync --pro
 # Service-only packages are installed after the locked VieNeu environment. They
 # do not replace VieNeu/onnxruntime and keep the upstream CPU lock intact.
 "$UV" pip install --python "$VENVS/tts/bin/python" "fastapi>=0.115,<1" "uvicorn[standard]>=0.30,<1" "pydantic>=2.8,<3" "pytest>=8,<10"
+# The pinned upstream defaults to a torch-free CPU environment. Colab's GPU
+# profile uses the SAME VieNeu model with its published PyTorch CUDA backend.
+"$UV" pip install --python "$VENVS/tts/bin/python" --index-url https://download.pytorch.org/whl/cu128 "torch==2.8.0" "torchaudio==2.8.0"
+"$UV" pip install --python "$VENVS/tts/bin/python" "transformers>=4.51,<5" "accelerate>=1,<2" "safetensors>=0.4,<1"
+"$VENVS/tts/bin/python" -c 'import torch; assert torch.cuda.is_available(), "Enable a Colab GPU runtime before setup; CUDA is not available"'
 
 echo "==> Pinned TTS artifacts (clean-cache reproducibility)"
 "$VENVS/tts/bin/python" "$ROOT/scripts/prefetch_tts.py" --profile colab-t4

@@ -43,7 +43,7 @@
         "embedding": {"device": "cuda", "dtype": "float16"},
         "reranker": {"device": "cuda", "dtype": "float16"},
         "llm": {"device": "adaptive-offload", "num_gpu": -1},
-        "tts": {"device": "cpu", "backend": "onnx"}
+        "tts": {"device": "cuda", "backend": "pytorch"}
       }
     },
     "server-gpu": {
@@ -54,7 +54,7 @@
         "embedding": {"device": "cuda", "dtype": "float16"},
         "reranker": {"device": "cuda", "dtype": "float16"},
         "llm": {"device": "adaptive-offload", "num_gpu": -1},
-        "tts": {"device": "cpu", "backend": "onnx"}
+        "tts": {"device": "cuda", "backend": "pytorch"}
       }
     }
   }

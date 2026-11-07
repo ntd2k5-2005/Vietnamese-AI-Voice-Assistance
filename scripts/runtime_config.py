@@ -15,7 +15,7 @@ VALID_DEVICES = {
     "embedding": {"cpu", "cuda", "mps"},
     "reranker": {"cpu", "cuda", "mps"},
     "llm": {"cpu", "adaptive-offload"},
-    "tts": {"cpu"},
+    "tts": {"cpu", "cuda"},
 }
 VALID_DTYPES = {"float32", "float16", "bfloat16"}
 
@@ -71,6 +71,8 @@ def load_profile(root: Path, name: str | None = None) -> tuple[str, dict[str, An
             if configured["device"] == "cpu" and dtype != "float32":
                 raise ValueError(f"runtime profile {profile_name!r} must use float32 for {component} on CPU")
     llm = placement["llm"]
+    if (placement["tts"]["device"], placement["tts"].get("backend")) not in {("cpu", "onnx"), ("cuda", "pytorch")}:
+        raise ValueError("TTS placement must be cpu/onnx or cuda/pytorch")
     if not isinstance(llm.get("num_gpu"), int) or llm["num_gpu"] < -1:
         raise ValueError(f"runtime profile {profile_name!r} has invalid llm.num_gpu")
     if (llm["device"] == "cpu") != (llm["num_gpu"] == 0):
@@ -173,11 +175,13 @@ def service_environments(
         }),
         "tts": merged({
             "TTS_PROFILE": "realtime",
+            "TTS_DEVICE": placement["tts"]["device"],
+            "TTS_BACKEND": placement["tts"]["backend"],
             "TTS_VIENEU_MODE": tts["model_id"].removeprefix("vieneu-"),
             "TTS_BACKBONE_MODEL_ID": tts.get("backbone_model_id"),
             "TTS_BACKBONE_REVISION": tts.get("backbone_revision"),
-            "TTS_CODEC_MODEL_ID": tts.get("codec_model_id"),
-            "TTS_CODEC_REVISION": tts.get("codec_revision"),
+            "TTS_CODEC_MODEL_ID": tts.get("gpu_codec_model_id") if placement["tts"]["device"] == "cuda" else tts.get("codec_model_id"),
+            "TTS_CODEC_REVISION": tts.get("gpu_codec_revision") if placement["tts"]["device"] == "cuda" else tts.get("codec_revision"),
             "VIENEU_UPSTREAM_COMMIT": tts["upstream_commit"],
             "VIENEU_UPSTREAM_REPOSITORY": tts["upstream_repository"],
         }),

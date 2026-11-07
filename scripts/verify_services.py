@@ -41,11 +41,11 @@ def main() -> None:
     realtime_ok = (
         tts.get("profile") == "realtime"
         and tts.get("streaming_mode") == "frame-pcm"
-        and "onnx" in str(tts.get("backend") or "").lower()
+        and str(tts.get("backend") or "").lower() in {"onnx", "pytorch"}
     )
     if not realtime_ok:
         failed = True
-        print("TTS V10 FAIL: expected profile=realtime, backend=onnx, streaming_mode=frame-pcm")
+        print("TTS not ready: expected realtime, backend onnx/pytorch, streaming_mode frame-pcm")
     else:
         print("TTS V10 realtime contract PASS")
 
@@ -80,7 +80,7 @@ def main() -> None:
     tts_manifest = manifest["components"]["tts"]
     tts_artifacts = (payloads.get("tts") or {}).get("model_artifacts") or {}
     for name in ("backbone", "codec"):
-        expected = tts_manifest.get(f"{name}_revision")
+        expected = tts_manifest.get("gpu_codec_revision" if name == "codec" and tts.get("backend") == "pytorch" else f"{name}_revision")
         artifact = tts_artifacts.get(name) or {}
         actual = artifact.get("resolved_revision")
         if expected and actual != expected:

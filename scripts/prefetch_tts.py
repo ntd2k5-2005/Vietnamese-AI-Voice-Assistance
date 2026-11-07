@@ -25,6 +25,10 @@ CODEC_FILES = (
     "moss_audio_tokenizer_encode.onnx",
     "moss_audio_tokenizer_encode.data",
 )
+GPU_BACKBONE_FILES = ("config.json", "speaker_encoder.onnx", "update/config.json", "update/model.safetensors",
+                      "update/tokenizer.json", "update/tokenizer_config.json", "update/special_tokens_map.json")
+GPU_CODEC_FILES = ("config.json", "__init__.py", "configuration_moss_audio_tokenizer.py",
+                   "modeling_moss_audio_tokenizer.py", "model-00001-of-00001.safetensors", "model.safetensors.index.json")
 
 
 def _verify_snapshot(
@@ -68,16 +72,17 @@ def prefetch_tts(
         snapshot_download = hf_snapshot_download
 
     tts = manifest["components"]["tts"]
+    gpu = profile["placement"]["tts"]["device"] == "cuda"
     specs = {
         "backbone": (
             str(tts["backbone_model_id"]),
             str(tts["backbone_revision"]),
-            BACKBONE_FILES,
+            GPU_BACKBONE_FILES if gpu else BACKBONE_FILES,
         ),
         "codec": (
-            str(tts["codec_model_id"]),
-            str(tts["codec_revision"]),
-            CODEC_FILES,
+            str(tts["gpu_codec_model_id"] if gpu else tts["codec_model_id"]),
+            str(tts["gpu_codec_revision"] if gpu else tts["codec_revision"]),
+            GPU_CODEC_FILES if gpu else CODEC_FILES,
         ),
     }
     result: dict[str, dict[str, str]] = {}

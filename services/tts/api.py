@@ -33,8 +33,8 @@ CHANNELS = 1
 DTYPE = "float32"
 VIENEU_MODE = os.getenv("TTS_VIENEU_MODE", "v3turbo").strip() or "v3turbo"
 TTS_PROFILE = "realtime"
-VIENEU_BACKEND = "onnx"
-VIENEU_DEVICE = "cpu"
+VIENEU_DEVICE = os.getenv("TTS_DEVICE", "cpu").strip().lower()
+VIENEU_BACKEND = os.getenv("TTS_BACKEND", "pytorch" if VIENEU_DEVICE == "cuda" else "onnx").strip().lower()
 DEFAULT_GENERATION_MODE = "stream"
 
 # Raw callers retain a streaming ceiling. Pre-chunked app sentences set their
@@ -71,6 +71,7 @@ streaming_supported = False
 resolved_backend: str | None = None
 warmup_metrics: dict[str, Any] | None = None
 resolved_model_storage_root: str | None = None
+loaded_backbone_revision: str | None = None
 enforced_download_revisions: dict[str, str] = {}
 
 # Optional trace framing used by the V10 application client.  HTTP is allowed
@@ -191,20 +192,32 @@ def _resolve_generation_mode(requested: str) -> str:
 
 
 def _model_init_kwargs() -> dict[str, Any]:
-    # Match VieNeu's published realtime path exactly: Vieneu(backend="onnx").
-    # Do not pass device="auto" on CUDA hosts.
-    values: dict[str, Any] = {"mode": VIENEU_MODE, "backend": "onnx"}
+    if (VIENEU_DEVICE, VIENEU_BACKEND) not in {("cpu", "onnx"), ("cuda", "pytorch")}:
+        raise RuntimeError("Use cpu/onnx or cuda/pytorch for VieNeu v3 Turbo")
+    values: dict[str, Any] = {"mode": VIENEU_MODE, "backend": VIENEU_BACKEND}
+    if VIENEU_DEVICE == "cuda":
+        import torch
+        if not torch.cuda.is_available():
+            raise RuntimeError("TTS requests CUDA but CUDA is unavailable; select a CPU profile explicitly")
+        values.update(device="cuda", dtype="float16")
+        codec = _pinned_snapshot_path(TTS_CODEC_MODEL_ID, TTS_CODEC_REVISION)
+        if codec is None:
+            raise RuntimeError("GPU TTS requires a pinned PyTorch codec snapshot")
+        values["moss_tokenizer"] = str(codec)
     pinned = _pinned_snapshot_path(TTS_BACKBONE_MODEL_ID, TTS_BACKBONE_REVISION)
+    if VIENEU_DEVICE == "cuda" and pinned is None:
+        raise RuntimeError("GPU TTS requires a pinned backbone snapshot")
     if pinned is not None:
         # VieNeu has no revision parameter. An immutable snapshot path prevents
         # a silent main-branch update while preserving the selected checkpoint.
         values["backbone_repo"] = str(pinned)
-        onnx_dir = pinned / "onnx_int8"
-        if not onnx_dir.is_dir():
-            raise RuntimeError(f"Pinned TTS ONNX directory is missing: {onnx_dir}")
-        # Upstream's ONNX loader otherwise treats every string as a Hub repo id,
-        # even when backbone_repo is a local directory.
-        values["onnx_dir"] = str(onnx_dir)
+        if VIENEU_BACKEND == "onnx":
+            onnx_dir = pinned / "onnx_int8"
+            if not onnx_dir.is_dir():
+                raise RuntimeError(f"Pinned TTS ONNX directory is missing: {onnx_dir}")
+            values["onnx_dir"] = str(onnx_dir)
+        elif not (pinned / "update/model.safetensors").is_file():
+            raise RuntimeError("Pinned GPU backbone weights missing; rerun prefetch for the GPU profile")
     return values
 
 
@@ -371,6 +384,7 @@ async def lifespan(app: FastAPI):
     global model, voices, load_error, load_time_seconds
     global streaming_supported, resolved_backend, warmup_metrics
     global resolved_model_storage_root, enforced_download_revisions
+    global loaded_backbone_revision
 
     if Vieneu is None:
         load_error = "Missing dependency 'vieneu'"
@@ -387,15 +401,17 @@ async def lifespan(app: FastAPI):
         )
 
         with _pinned_huggingface_downloads():
-            model = Vieneu(**_model_init_kwargs())
+            init_kwargs = _model_init_kwargs()
+            model = Vieneu(**init_kwargs)
+        loaded_backbone_revision = Path(init_kwargs.get("backbone_repo", "")).name or None
         voices = list(model.list_preset_voices())
         load_time_seconds = time.perf_counter() - started
         streaming_supported = callable(getattr(model, "infer_stream", None)) and not FORCE_BLOCKING
         resolved_backend = str(getattr(model, "backend", VIENEU_BACKEND)).lower()
 
-        if "onnx" not in resolved_backend:
+        if VIENEU_BACKEND != resolved_backend:
             raise RuntimeError(
-                "V10 realtime requires VieNeu ONNX backend; "
+                "TTS backend differs from selected runtime; "
                 f"resolved backend was {resolved_backend!r}"
             )
         if not streaming_supported:
@@ -465,7 +481,8 @@ def health_ready():
         "streaming_supported": streaming_supported,
         "streaming_mode": "frame-pcm" if streaming_supported else "unavailable",
         "backend": resolved_backend,
-        "device_policy": "cpu/onnx-pinned",
+        "device_policy": f"{VIENEU_DEVICE}/{VIENEU_BACKEND}-pinned",
+        "device": str(getattr(getattr(model, "engine", None), "device", VIENEU_DEVICE)),
         "runtime_profile": os.getenv("RUNTIME_PROFILE"),
         "model_manifest_id": os.getenv("MODEL_MANIFEST_ID"),
         "model_storage_root": resolved_model_storage_root,
@@ -474,12 +491,12 @@ def health_ready():
                 "model_id": TTS_BACKBONE_MODEL_ID,
                 "requested_revision": TTS_BACKBONE_REVISION,
                 "resolved_revision": (
-                    Path(str(getattr(getattr(model, "engine", None), "checkpoint_path", ""))).name
-                    or None
+                    loaded_backbone_revision
+                    or Path(str(getattr(getattr(model, "engine", None), "checkpoint_path", ""))).name or None
                 ),
                 "load_source": "pinned-local-snapshot",
                 "revision_policy": {
-                    "status": "enforced",
+                    "status": "enforced" if loaded_backbone_revision == TTS_BACKBONE_REVISION and TTS_BACKBONE_REVISION else "not-enforced",
                     "mechanism": "immutable-local-snapshot-path",
                     "limitation": None,
                 },
@@ -489,18 +506,18 @@ def health_ready():
                 "requested_revision": TTS_CODEC_REVISION,
                 "resolved_revision": enforced_download_revisions.get(
                     str(TTS_CODEC_MODEL_ID)
-                ),
+                ) if VIENEU_BACKEND == "onnx" else TTS_CODEC_REVISION,
                 "revision_policy": {
                     "status": (
                         "enforced"
-                        if enforced_download_revisions.get(str(TTS_CODEC_MODEL_ID))
+                        if VIENEU_BACKEND == "pytorch" or enforced_download_revisions.get(str(TTS_CODEC_MODEL_ID))
                         == TTS_CODEC_REVISION
                         else "not-enforced"
                     ),
-                    "mechanism": "huggingface-download-revision-override",
+                    "mechanism": "immutable-local-snapshot-path" if VIENEU_BACKEND == "pytorch" else "huggingface-download-revision-override",
                     "limitation": (
                         None
-                        if enforced_download_revisions.get(str(TTS_CODEC_MODEL_ID))
+                        if VIENEU_BACKEND == "pytorch" or enforced_download_revisions.get(str(TTS_CODEC_MODEL_ID))
                         == TTS_CODEC_REVISION
                         else "VieNeu did not load the codec through the pinned Hub path"
                     ),
@@ -530,7 +547,7 @@ def health_ready():
                 )
             },
             "package_path": package_path,
-            "environment_policy": "uv-sync-frozen",
+            "environment_policy": "uv-sync-frozen+cuda-extra" if VIENEU_BACKEND == "pytorch" else "uv-sync-frozen",
         },
         "warmup": warmup_metrics,
     }

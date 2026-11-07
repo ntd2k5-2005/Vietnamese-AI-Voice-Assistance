@@ -102,6 +102,7 @@ class PCMPlayerV10 extends AudioWorkletProcessor {
         this.cumulativeAcceptedFrames += samples.length;
         this.port.postMessage({
           type: "accepted",
+          epoch: this.epoch,
           sequence,
           acceptedFrames: samples.length,
           bufferedFrames: this.ring.size,
@@ -160,6 +161,7 @@ class PCMPlayerV10 extends AudioWorkletProcessor {
         span.started = true;
         this.port.postMessage({
           type: "consuming",
+          epoch: this.epoch,
           sequence: span.sequence,
           bufferedFrames: this.ring.size,
           cumulativeConsumedFrames: this.cumulativeConsumedFrames,
@@ -196,9 +198,9 @@ class PCMPlayerV10 extends AudioWorkletProcessor {
         this.playing = true;
         if (!this.startedOnce) {
           this.startedOnce = true;
-          this.port.postMessage({type: "started", bufferedFrames: this.ring.size});
+          this.port.postMessage({type: "started", epoch: this.epoch, bufferedFrames: this.ring.size});
         } else {
-          this.port.postMessage({type: "resumed", bufferedFrames: this.ring.size});
+          this.port.postMessage({type: "resumed", epoch: this.epoch, bufferedFrames: this.ring.size});
         }
         this.currentUnderrunFrames = 0;
       } else {
@@ -230,6 +232,7 @@ class PCMPlayerV10 extends AudioWorkletProcessor {
       this.playing = false;
       this.port.postMessage({
         type: "rebuffering",
+        epoch: this.epoch,
         bufferedFrames: this.ring.size,
         underrunCount: this.underrunCount,
         rebufferCount: this.rebufferCount,

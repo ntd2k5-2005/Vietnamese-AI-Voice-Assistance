@@ -4,6 +4,7 @@
   "version": "3.3.0",
   "install_mode": "uv-sync-frozen",
   "profile": "realtime",
-  "backend": "onnx",
-  "device_policy": "cpu"
+  "backend": "runtime-profile",
+  "device_policy": "runtime-profile",
+  "supported_backends": {"cpu": "onnx", "cuda": "pytorch"}
 }

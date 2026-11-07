@@ -9,6 +9,16 @@ orther/envs/app/bin/python scripts/start_services.py --profile colab-t4 --with-w
 
 Đợi dịch vụ sẵn sàng rồi mở tunnel đến cổng 7860. Khi cập nhật mã, khởi động lại các dịch vụ và tải lại trang.
 
+Profile Colab hiện dùng TTS PyTorch/CUDA, cần bật GPU trước setup. Nếu môi trường cũ chỉ cài VieNeu ONNX/CPU, phải chạy lại setup để có thư viện CUDA và bộ trọng số/codec tương ứng; chỉ restart web không đủ. Xem `services/tts/README.md`. Kiểm tra `/health/ready` của TTS: `backend=pytorch`, `device=cuda`, `streaming_supported=true`; không suy ra GPU chỉ từ tên profile.
+
+Khởi động sẽ xóa qua lifecycle những tài liệu kiểm thử có đúng cặp ID/tên file `colab-smoke-*/smoke-source.txt` hoặc `product-smoke-*/product-smoke.txt`. Bản ghi đã xóa được giữ trong audit RAG và không hiện trong danh sách tài liệu web. Không nạp tài liệu smoke tự động; bỏ ô tạo smoke nếu notebook bên ngoài repo còn chứa ô đó. Có thể chạy riêng:
+
+```bash
+orther/envs/app/bin/python scripts/cleanup_demo_sources.py --rag-url http://127.0.0.1:8001 --apply
+```
+
+Chữ hiện theo số frame audio đã thực sự tiêu thụ ở AudioWorklet, chia theo thời lượng của câu. Khi chờ đệm, chữ dừng; hủy lượt thì bỏ cả hàng đợi chữ và audio cũ. Nếu giọng đọc lỗi, phần văn bản đã sinh vẫn được hiển thị kèm lỗi dễ hiểu.
+
 ## Windows
 
 ```powershell

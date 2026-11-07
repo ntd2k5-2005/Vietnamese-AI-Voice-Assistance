@@ -201,3 +201,31 @@ def test_v10_warmup_profiles_short_and_medium(monkeypatch):
     result = api._run_warmup()
     assert result["profiles"] == ["short", "medium"]
     assert len(result["runs"]) == 2
+
+
+def test_gpu_constructor_uses_pytorch_weights_and_pinned_codec(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "VIENEU_DEVICE", "cuda")
+    monkeypatch.setattr(api, "VIENEU_BACKEND", "pytorch")
+    monkeypatch.setattr(api, "TTS_BACKBONE_MODEL_ID", "org/backbone")
+    monkeypatch.setattr(api, "TTS_BACKBONE_REVISION", "rev1")
+    monkeypatch.setattr(api, "TTS_CODEC_MODEL_ID", "org/codec")
+    monkeypatch.setattr(api, "TTS_CODEC_REVISION", "rev2")
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)))
+    backbone = tmp_path / "hub/models--org--backbone/snapshots/rev1"
+    (backbone / "update").mkdir(parents=True)
+    (backbone / "update/model.safetensors").touch()
+    codec = tmp_path / "hub/models--org--codec/snapshots/rev2"
+    codec.mkdir(parents=True)
+    kwargs = api._model_init_kwargs()
+    assert kwargs["backend"] == "pytorch" and kwargs["device"] == "cuda"
+    assert kwargs["moss_tokenizer"] == str(codec.resolve())
+    assert "onnx_dir" not in kwargs
+
+
+def test_requested_gpu_is_not_silently_reported_while_running_cpu(monkeypatch):
+    monkeypatch.setattr(api, "VIENEU_DEVICE", "cuda")
+    monkeypatch.setattr(api, "VIENEU_BACKEND", "pytorch")
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)))
+    with pytest.raises(RuntimeError, match="CUDA is unavailable"):
+        api._model_init_kwargs()

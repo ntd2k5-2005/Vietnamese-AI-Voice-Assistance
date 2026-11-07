@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from runtime_config import load_manifest, load_profile, service_environments  # noqa: E402
+from cleanup_demo_sources import is_demo_source  # noqa: E402
 from prefetch_tts import BACKBONE_FILES, CODEC_FILES, prefetch_tts  # noqa: E402
 from verify_product import service_url  # noqa: E402
 from validate_acceptance import (  # noqa: E402
@@ -74,6 +75,41 @@ def test_product_verifier_resolves_tts_url_from_runtime_profile():
     assert service_url("colab-t4", "tts") == "http://127.0.0.1:8003"
 
 
+def test_colab_gpu_placement_reaches_real_constructor_environment():
+    manifest = load_manifest(ROOT)
+    name, profile = load_profile(ROOT, "colab-t4")
+    environment = service_environments(ROOT, manifest, name, profile, {})["tts"]
+    assert environment["TTS_DEVICE"] == "cuda"
+    assert environment["TTS_BACKEND"] == "pytorch"
+    assert environment["TTS_CODEC_MODEL_ID"] == "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
+    assert environment["TTS_CODEC_REVISION"] == "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
+
+
+def test_demo_cleanup_cannot_match_real_knowledge_documents():
+    assert is_demo_source({"document_id": "colab-smoke-1794057606", "filename": "smoke-source.txt"})
+    assert not is_demo_source({"document_id": "colab-smoke-law", "filename": "luat.docx"})
+    assert not is_demo_source({"document_id": "luat", "filename": "smoke-source.txt"})
+
+
+def test_gpu_prefetch_downloads_torch_artifacts_instead_of_onnx(tmp_path):
+    project = tmp_path / "repo"
+    shutil.copytree(ROOT / "config", project / "config")
+    calls = []
+    def download(**kwargs):
+        calls.append(kwargs)
+        snapshot = Path(kwargs["cache_dir"]) / ("models--" + kwargs["repo_id"].replace("/", "--")) / "snapshots" / kwargs["revision"]
+        for name in kwargs["allow_patterns"]:
+            file = snapshot / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.touch()
+        return str(snapshot)
+    result = prefetch_tts(project, "colab-t4", snapshot_download=download)
+    assert "update/model.safetensors" in calls[0]["allow_patterns"]
+    assert "speaker_encoder.onnx" in calls[0]["allow_patterns"]
+    assert "model-00001-of-00001.safetensors" in calls[1]["allow_patterns"]
+    assert result["codec"]["revision"] == "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
+
+
 def test_tts_prefetch_uses_runtime_hf_home_and_exact_manifest_revisions(tmp_path):
     project = tmp_path / "repo"
     shutil.copytree(ROOT / "config", project / "config")
@@ -96,7 +132,7 @@ def test_tts_prefetch_uses_runtime_hf_home_and_exact_manifest_revisions(tmp_path
 
     result = prefetch_tts(
         project,
-        "colab-t4",
+        "local-cpu",
         snapshot_download=fake_snapshot_download,
     )
     expected_hf_home = (project / "orther" / "cache" / "huggingface").resolve()

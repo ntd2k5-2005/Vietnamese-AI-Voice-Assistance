@@ -12,7 +12,7 @@ import time
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "orther/artifacts/browser-flow"
+OUT = Path(os.environ.get("VOICE_BROWSER_EVIDENCE_DIR", ROOT / "orther/artifacts/browser-flow"))
 sys.path[:0] = [str(ROOT / "app"), str(ROOT / "app/tests")]
 
 
@@ -84,7 +84,7 @@ def main(microphone=False):
                 else:
                     raise TimeoutError("Fixture gateway startup")
                 with sync_playwright() as pw:
-                    flags = ["--autoplay-policy=no-user-gesture-required"]
+                    flags = []  # Exercise normal user-gesture autoplay policy.
                     if microphone:
                         flags.extend(["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--use-file-for-fake-audio-capture=" + str(OUT / "synthetic-mic.wav")])
                     browser = pw.chromium.launch(channel="chrome", headless=True, args=flags)
@@ -93,6 +93,12 @@ def main(microphone=False):
                     page.wait_for_function("typeof handleWorkletMessage === 'function'")
                     page.evaluate("""() => {
                       window.__audioEvents=[];
+                      window.__textEvents=[];
+                      const render=updateAssistant;
+                      updateAssistant=(id,text)=>{
+                        window.__textEvents.push({text,time:performance.now(),consumed:spokenFrames});
+                        render(id,text);
+                      };
                       const original=handleWorkletMessage;
                       handleWorkletMessage=msg=>{
                         if(['started','resumed','rebuffering','drained','consuming'].includes(msg.type))
@@ -108,7 +114,7 @@ def main(microphone=False):
                         page.locator("#question").fill("Xin chào")
                         page.locator("#sendBtn").click()
                     page.wait_for_function("serverTurnDone && playbackDrained && !turnBusy", timeout=40000)
-                    row = page.evaluate("""() => ({events:window.__audioEvents,accepted:bm.pcm_trace_count,
+                    row = page.evaluate("""() => ({events:window.__audioEvents,text_events:window.__textEvents,accepted:bm.pcm_trace.length,
                       underruns:bm.underrun_count,rebuffer:bm.rebuffer_count,turnBusy,
                       text:document.querySelector('.message.assistant')?.innerText})""")
                     row.update(mode=label, fixture="synthetic_sine_PCM_and_stub_LLM_not_model_inference")
@@ -122,9 +128,14 @@ def main(microphone=False):
                 process.wait(timeout=15)
     (OUT / ("mic-result.json" if microphone else "result.json")).write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     assert all(any(e["type"] == "drained" for e in r["events"]) for r in results)
+    for row in results:
+        first_spoken_text = next(e for e in row["text_events"] if e["text"] and e["text"] != "…")
+        first_played = next(e for e in row["events"] if e["type"] == "started")
+        assert first_spoken_text["time"] >= first_played["time"]
+        assert first_spoken_text["consumed"] > 0
     if not microphone:
         assert results[1]["underruns"] < results[0]["underruns"], results
-    print(json.dumps([{k: v for k, v in r.items() if k != "events"} for r in results], ensure_ascii=False))
+    print(json.dumps([{k: v for k, v in r.items() if k not in {"events", "text_events"}} for r in results], ensure_ascii=False))
 
 
 if __name__ == "__main__":

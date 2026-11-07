@@ -472,9 +472,9 @@ class TTSClient:
                         "TTS realtime contract requires frame-pcm, got "
                         f"{streaming_mode!r}"
                     )
-                if "onnx" not in upstream_backend.lower():
+                if upstream_backend.lower() not in {"onnx", "pytorch"}:
                     raise ContractError(
-                        "TTS realtime contract requires ONNX backend, got "
+                        "TTS realtime contract requires ONNX or PyTorch backend, got "
                         f"{upstream_backend!r}"
                     )
                 if trace_protocol != "tts1-f32":

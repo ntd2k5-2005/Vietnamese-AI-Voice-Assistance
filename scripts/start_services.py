@@ -9,6 +9,7 @@ import urllib.request
 from pathlib import Path
 
 from runtime_config import load_manifest, load_profile, service_environments
+from cleanup_demo_sources import cleanup
 
 ROOT = Path(__file__).resolve().parents[1]
 VENVS = ROOT / "orther" / "envs"
@@ -108,6 +109,13 @@ def main() -> None:
             print(f"START {name}: {' '.join(cmd)}")
             p=subprocess.Popen(cmd,cwd=cwd,env=extra,stdout=fh,stderr=subprocess.STDOUT); processes.append(p)
             wait_http(health, process=p, service=name)
+            if name == "rag":
+                try:
+                    print("Diagnostic source cleanup:", cleanup(f"http://127.0.0.1:{ports['rag']}", apply=True))
+                except Exception as error:
+                    # Cleanup is not a dependency of speech playback. Keep the
+                    # failure visible to the operator without stopping models.
+                    print(f"Diagnostic cleanup pending ({type(error).__name__}); use cleanup_demo_sources.py to retry.")
         if args.with_web:
             print(f"\nV10 stack ready at http://127.0.0.1:{ports['web']}")
         else:

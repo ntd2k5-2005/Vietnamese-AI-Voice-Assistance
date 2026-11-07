@@ -119,6 +119,30 @@ async function main() {
   assert.equal(attempts,2);
   results.push('PCM duplicate rejection and lossless cursor resume after a gap');
 
+  const textSync = browser();
+  textSync.captureText = [];
+  vm.runInContext(`
+    currentTurn='sync'; currentGeneration=1;
+    updateAssistant=(_id,text)=>captureText.push(text);
+    handleEvent({type:'llm_delta',answer:'Xin chào bạn.'},'sync',1);
+  `, textSync);
+  assert.equal(textSync.captureText.length,0,'LLM text must not appear ahead of audio');
+  vm.runInContext(`
+    speechUnit(1).startFrame=0;
+    handleEvent({type:'speech_unit_queued',unit_index:1,speech_text:'Xin chào bạn.'},'sync',1);
+    handleEvent({type:'tts_unit_done',unit:1,speech_text:'Xin chào bạn.',audio_duration_ms:1000},'sync',1);
+    handleWorkletMessage({type:'metrics',epoch:playbackEpoch,cumulativeConsumedFrames:500});
+  `,textSync);
+  assert.equal(textSync.captureText.at(-1),'Xin ch','half the audio reveals half the Unicode characters');
+  vm.runInContext(`handleWorkletMessage({type:'metrics',epoch:playbackEpoch,cumulativeConsumedFrames:500,playing:false})`,textSync);
+  assert.equal(textSync.captureText.at(-1),'Xin ch','rebuffering must not advance text');
+  vm.runInContext(`handleWorkletMessage({type:'metrics',epoch:playbackEpoch-1,cumulativeConsumedFrames:1000})`,textSync);
+  assert.equal(textSync.captureText.at(-1),'Xin ch','ignore stale player clocks');
+  vm.runInContext(`handleWorkletMessage({type:'drained',epoch:playbackEpoch})`,textSync);
+  assert.equal(textSync.captureText.at(-1),'Xin chào bạn.');
+  assert.equal(vm.runInContext(`friendlyError('<!DOCTYPE html><html>524</html>')`,textSync).includes('<html>'),false);
+  results.push('text follows consumed audio frames, pauses with buffering and flushes final punctuation');
+
   let Worklet;
   const messages = [];
   const worklet = vm.createContext({sampleRate:1000, Float32Array, Uint8Array, ArrayBuffer, DataView,

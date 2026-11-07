@@ -72,7 +72,7 @@ class TurnSession:
     generation: int
     created_at: float
     event_queue: queue.Queue[dict[str, Any]] = field(default_factory=lambda: queue.Queue(maxsize=2048))
-    audio_queue: queue.Queue[AudioPacket | None] = field(default_factory=queue.Queue)
+    audio_queue: queue.Queue[AudioPacket | None] = field(default_factory=lambda: queue.Queue(maxsize=512))
     finished: threading.Event = field(default_factory=threading.Event)
     final_audio: str | None = None
     browser_metrics: dict[str, Any] = field(default_factory=dict)
@@ -193,7 +193,9 @@ class TurnManager:
                     return None
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    continue
+                    # Release the condition! Spinning here held the producer's
+                    # lock forever when the first TTS unit took over 15 seconds.
+                    return None
                 session.audio_condition.wait(remaining)
 
     @staticmethod
@@ -500,7 +502,7 @@ def create_app():
                 tts.get("pipeline") == "v10"
                 and tts.get("profile") == "realtime"
                 and tts.get("streaming_mode") == "frame-pcm"
-                and "onnx" in str(tts.get("backend") or "").lower()
+                and str(tts.get("backend") or "").lower() in {"onnx", "pytorch"}
             ),
             "tts_performance_probe": warmup.get("performance"),
             "conversation_store": "in-memory",
@@ -690,8 +692,11 @@ def create_app():
             while True:
                 packet = await asyncio.to_thread(manager.next_audio, session, cursor, 15.0)
                 if packet is None:
-                    await websocket.send_json({"type": "end"})
-                    break
+                    if session.audio_finished:
+                        await websocket.send_json({"type": "end"})
+                        break
+                    await websocket.send_json({"type": "keepalive"})
+                    continue
                 await websocket.send_bytes(encode_pcm_websocket_packet(packet))
                 cursor = int(packet.meta.get("chunk_index") or cursor)
         except WebSocketDisconnect:
@@ -730,7 +735,12 @@ def create_app():
 
     @app.get("/api/knowledge/documents")
     def list_documents():
-        return orchestrator.rag.list_documents()
+        # Deleted test tombstones stay in RAG's audit trail, never in the
+        # ordinary document picker. No production documents are auto-deleted.
+        return [doc for doc in orchestrator.rag.list_documents()
+                if doc.get("status") != "deleted" and not (
+                    (str(doc.get("document_id", "")).startswith("colab-smoke-") and doc.get("filename") == "smoke-source.txt")
+                    or (str(doc.get("document_id", "")).startswith("product-smoke-") and doc.get("filename") == "product-smoke.txt"))]
 
     @app.delete("/api/knowledge/documents/{document_id}")
     def delete_document(document_id: str):
