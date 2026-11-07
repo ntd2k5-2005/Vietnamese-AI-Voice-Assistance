@@ -1,7 +1,10 @@
 {
   "repository": "https://github.com/pnnbao97/VieNeu-TTS.git",
-  "commit": "36c4b501b0634a8f59805e6b529a058fbd30190b",
-  "version": "3.3.0",
+  "commit": "6cdb62e03e6a9fd6ebff70e77aff8570c50949c3",
+  "version": "3.8.3",
+  "sample_rate": 48000,
+  "onnx_precision": "fp32",
+  "max_streams": 1,
   "install_mode": "uv-sync-frozen",
   "profile": "realtime",
   "backend": "runtime-profile",

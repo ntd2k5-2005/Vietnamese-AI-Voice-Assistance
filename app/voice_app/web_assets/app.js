@@ -1,4 +1,4 @@
-const ASSET_VERSION = "d82a41";
+const ASSET_VERSION = "vieneu383";
 const $ = (id) => document.getElementById(id);
 
 let audioCtx = null;
@@ -31,10 +31,20 @@ function revealSpokenText() {
   if (!currentTurn) return;
   const parts = [];
   for (const unit of [...spokenUnits.values()].sort((a, b) => a.index - b.index)) {
-    if (unit.startFrame == null || !unit.totalFrames || !unit.text) break;
-    const progress = Math.max(0, Math.min(1, (spokenFrames - unit.startFrame) / unit.totalFrames));
+    if (unit.startFrame == null || !unit.text) break;
     const chars = Array.from(unit.text);
-    parts.push(chars.slice(0, Math.floor(chars.length * progress)).join(""));
+    const completed = [...spokenUnits.values()].filter(v => v.totalFrames > 0 && v.text);
+    const totalChars = completed.reduce((n, v) => n + Array.from(v.text).length, 0);
+    const totalFrames = completed.reduce((n, v) => n + v.totalFrames, 0);
+    // A streaming waveform has no final duration until TTS finishes. Use the
+    // measured prior units (20 chars/s for the very first unit) as a provisional
+    // estimate, driven ONLY by consumed audio frames. Never advance on wall time
+    // during buffering, and reconcile monotonically once actual duration arrives.
+    const rate = totalChars > 0 ? totalFrames / totalChars : (audioCtx?.sampleRate || 48000) / 20;
+    const duration = unit.totalFrames || Math.max(1, chars.length * rate);
+    const progress = Math.max(0, Math.min(unit.totalFrames ? 1 : .9, (spokenFrames - unit.startFrame) / duration));
+    unit.visibleChars = Math.max(unit.visibleChars || 0, Math.floor(chars.length * progress));
+    parts.push(chars.slice(0, unit.visibleChars).join(""));
     if (progress < 1) break;
   }
   updateAssistant(currentTurn, parts.join(" "));
@@ -463,6 +473,8 @@ function handleEvent(event, turnId, generation) {
     if (bm.first_pcm_received_ms === null) setStatus("Đang chuẩn bị giọng đọc…", "thinking");
     setText("mLlmDone", fmtMs(event.meta?.pipeline_done_ms));
   } else if (kind === "tts_unit_done") {
+    if ($("mTtsTtfb")?.textContent === "—") setText("mTtsTtfb", fmtMs(event.ttfb_ms));
+    if ($("mTtsRtf")?.textContent === "—") setText("mTtsRtf", Number.isFinite(event.rtf) ? event.rtf.toFixed(3) : "—");
     const unit = speechUnit(Number(event.unit));
     unit.text = event.speech_text || unit.text;
     unit.totalFrames = Math.round(Number(event.audio_duration_ms || 0) * (audioCtx?.sampleRate || 48000) / 1000);
@@ -604,7 +616,7 @@ function resetTurnTelemetry(epoch) {
   serverTurnDone = false;
   $("replayWrap")?.classList.add("hidden");
   $("replay")?.removeAttribute("src");
-  for (const id of ["mSentence", "mTtsStart", "mFirstPcm", "mLlmDone", "mBargeIn"]) setText(id, "—");
+  for (const id of ["mSentence", "mTtsStart", "mFirstPcm", "mLlmDone", "mBargeIn", "mTtsTtfb", "mTtsRtf"]) setText(id, "—");
   setText("rawMetrics", "Đang xử lý lượt hội thoại…");
 }
 
@@ -686,8 +698,47 @@ function commonForm(form, id) {
   form.append("rag_mode", $("ragMode")?.value || "dense");
   form.append("rerank", $("rerank")?.checked ? "true" : "false");
   form.append("top_k", $("topK")?.value || "5");
-  form.append("voice_index", $("voiceIndex")?.value || "2");
+  form.append("voice_index", String(selectedVoiceIndex()));
   return form;
+}
+
+function selectedVoiceIndex() {
+  const select = $("voiceIndex");
+  if (!select || select.disabled || select.value === "") {
+    throw new Error("Giọng đọc chưa sẵn sàng. Vui lòng tải lại danh sách giọng đọc.");
+  }
+  const index = Number(select.value);
+  if (!Number.isInteger(index) || index < 0) throw new Error("Vui lòng chọn giọng đọc.");
+  return index;
+}
+
+async function refreshVoices() {
+  const select = $("voiceIndex");
+  if (!select) return;
+  const previous = select.selectedOptions?.[0]?.dataset.voiceId || sessionStorage.getItem("voice-ai.voice");
+  select.disabled = true;
+  setText("voiceStatus", "Đang tải danh sách giọng đọc…");
+  $("voiceRetry")?.classList.add("hidden");
+  try {
+    const response = await fetch("/api/voices", { signal: AbortSignal.timeout(12000) });
+    if (!response.ok) throw new Error("Danh sách chưa sẵn sàng");
+    const data = await response.json();
+    if (!Array.isArray(data.voices) || !data.voices.length) throw new Error("Chưa có giọng đọc");
+    select.replaceChildren();
+    const preferred = data.voices.find(v => v.id === previous) || data.voices.find(v => v.default) || data.voices[0];
+    for (const voice of data.voices) {
+      const option = new Option(voice.label || voice.name, String(voice.index));
+      option.dataset.voiceId = voice.id;
+      option.selected = voice.id === preferred.id;
+      select.add(option);
+    }
+    select.disabled = false;
+    setText("voiceStatus", "");
+  } catch (error) {
+    select.replaceChildren(new Option("Chưa tải được giọng đọc", ""));
+    setText("voiceStatus", "Chưa tải được giọng đọc. Bạn có thể thử lại.");
+    $("voiceRetry")?.classList.remove("hidden");
+  }
 }
 
 async function sendText() {
@@ -700,7 +751,7 @@ async function sendText() {
       body: JSON.stringify({
         conversation_id: id, query, rag_mode: $("ragMode")?.value || "dense",
         rerank: Boolean($("rerank")?.checked), top_k: Number($("topK")?.value || 5),
-        voice_index: Number($("voiceIndex")?.value || 2),
+        voice_index: selectedVoiceIndex(),
       }),
     }), query);
   } catch (error) { setStatus(friendlyError(error), "error"); }
@@ -1011,6 +1062,12 @@ function bindClick(id, handler) {
 }
 
 async function bootstrap() {
+  bindClick("voiceRetry", () => void refreshVoices());
+  $("voiceIndex")?.addEventListener("change", () => {
+    const id = $("voiceIndex").selectedOptions[0]?.dataset.voiceId;
+    if (id) sessionStorage.setItem("voice-ai.voice", id);
+  });
+  void refreshVoices();
   bindClick("sendBtn", () => void sendText());
   bindClick("micBtn", () => void toggleMic().catch((error) => setStatus(friendlyError(error), "error")));
   bindClick("interruptBtn", () => void interruptCurrentTurn("user_cancelled"));

@@ -12,6 +12,10 @@ Trợ lý giọng nói tiếng Việt độc lập, hỗ trợ trò chuyện và
 
 ## Khởi chạy
 
+Cách nhanh trên Colab/Kaggle: mở [notebook demo](notebooks/CHAY_VIETNAMESE_VOICE_AI_COLAB_KAGGLE.ipynb), bật GPU/Internet và **Run all**. Notebook tự clone đúng commit, chạy dịch vụ và in link Cloudflare; không cần ô vá digest trước bước 4.
+
+VieNeu SDK 3.8.3 đã khóa commit, đủ 25 giọng (mặc định Hải Đăng), streaming PCM 48 kHz. Xem [kết quả kiểm thử và độ trễ](docs/VIENEU_383_UPGRADE.md).
+
 Trên Colab/Linux, từ thư mục gốc repository:
 
 ```bash

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0e14" />
   <title>Vietnamese Voice AI</title>
   <meta name="description" content="Trợ lý giọng nói tiếng Việt. Trò chuyện tự nhiên và tìm thông tin từ kho tri thức của bạn." />
-  <link rel="stylesheet" href="/assets/style.css?asset=d82a41" />
+  <link rel="stylesheet" href="/assets/style.css?asset=vieneu383" />
 </head>
 <body>
   <main class="shell">
@@ -70,7 +70,13 @@
               </select>
             </label>
             <label>Số nguồn <input id="topK" type="number" min="1" max="12" value="5" /></label>
-            <label>Giọng đọc <input id="voiceIndex" type="number" min="0" value="2" /></label>
+            <label>Giọng đọc
+              <select id="voiceIndex" aria-describedby="voiceStatus" disabled>
+                <option value="">Đang tải giọng đọc…</option>
+              </select>
+            </label>
+            <span id="voiceStatus" role="status" aria-live="polite"></span>
+            <button id="voiceRetry" type="button" class="hidden">Tải lại giọng đọc</button>
             <label class="check"><input id="rerank" type="checkbox" /> Ưu tiên nguồn phù hợp</label>
           </div>
         </details>
@@ -84,6 +90,8 @@
           <div><span>Đủ câu đầu tiên</span><strong id="mSentence">—</strong></div>
           <div><span>Bắt đầu tạo giọng đọc</span><strong id="mTtsStart">—</strong></div>
           <div><span>Có âm thanh tại máy chủ</span><strong id="mFirstPcm">—</strong></div>
+          <div><span>TTS tạo khung đầu</span><strong id="mTtsTtfb">—</strong></div>
+          <div><span>RTF giọng đọc</span><strong id="mTtsRtf">—</strong></div>
           <div><span>Nhận âm thanh</span><strong id="mBrowserPcm">—</strong></div>
           <div><span>Viết xong câu trả lời</span><strong id="mLlmDone">—</strong></div>
           <div><span>Chờ thêm âm thanh</span><strong id="mUnderrun">0 / 0</strong></div>
@@ -117,6 +125,6 @@
       </section>
     </section>
   </main>
-  <script src="/assets/app.js?asset=d82a41" defer></script>
+  <script src="/assets/app.js?asset=vieneu383" defer></script>
 </body>
 </html>

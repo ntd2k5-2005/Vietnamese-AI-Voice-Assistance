@@ -31,8 +31,8 @@ def test_manifest_preserves_the_current_source_baseline():
     assert components["reranker"]["revision"] == "8215cf04918ba6f7b6a62bb44238ce2953d8831c"
     assert components["llm"]["model_id"] == "qwen3.5:4b"
     assert components["llm"]["manifest_digest"] == (
-        "2a654d98e6fba55d452b7043684e9b57"
-        "a947e393bbffa62485a7aac05ee4eefd"
+        "d8b0f5e9760cd1682034f292d7ef72ec"
+        "46f432149be0df7574bf2d6e92e38c04"
     )
 
     tts_runtime = json.loads(

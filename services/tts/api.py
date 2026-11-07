@@ -15,6 +15,7 @@ from typing import Any, Literal
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import iterate_in_threadpool
 from pydantic import BaseModel, Field
 
 try:
@@ -35,6 +36,10 @@ VIENEU_MODE = os.getenv("TTS_VIENEU_MODE", "v3turbo").strip() or "v3turbo"
 TTS_PROFILE = "realtime"
 VIENEU_DEVICE = os.getenv("TTS_DEVICE", "cpu").strip().lower()
 VIENEU_BACKEND = os.getenv("TTS_BACKEND", "pytorch" if VIENEU_DEVICE == "cuda" else "onnx").strip().lower()
+ONNX_PRECISION = os.getenv("TTS_ONNX_PRECISION", "fp32").strip().lower()
+CPU_THREADS = min(os.cpu_count() or 4, max(1, int(os.getenv("TTS_THREADS", "4"))))
+MAX_STREAMS = max(1, int(os.getenv("TTS_MAX_STREAMS", "1")))
+_stream_slots = threading.BoundedSemaphore(MAX_STREAMS if VIENEU_BACKEND == "pytorch" else 1)
 DEFAULT_GENERATION_MODE = "stream"
 
 # Raw callers retain a streaming ceiling. Pre-chunked app sentences set their
@@ -160,6 +165,36 @@ def _voice_identifier(value: Any) -> Any:
     return value
 
 
+def voice_options() -> list[dict[str, Any]]:
+    """Public preset metadata only: never return embeddings or reference codes."""
+    default = getattr(model, "_default_voice", None) or ("Hải Đăng" if any(_voice_identifier(v) == "Hải Đăng" for v in voices) else None)
+    result = []
+    for index, voice in enumerate(voices):
+        identifier = str(_voice_identifier(voice))
+        label = str(voice[0]) if isinstance(voice, (list, tuple)) else str(voice.get("label", identifier)) if isinstance(voice, dict) else identifier
+        result.append({"id": identifier, "name": identifier, "label": label,
+                       "index": index, "default": identifier == default})
+    return result
+
+
+def resolve_voice(request) -> tuple[Any, str]:
+    if request.voice_id:
+        name = request.voice_id
+        resolver = getattr(model, "resolve_voice_name", None)
+        canonical = resolver(name) if callable(resolver) else name
+        if canonical not in {str(_voice_identifier(v)) for v in voices}:
+            raise HTTPException(status_code=422, detail="Giọng đọc không còn trong danh sách. Vui lòng chọn lại.")
+        return model.get_preset_voice(canonical), canonical
+    index = request.voice_index
+    if index is None:
+        default = next((v for v in voice_options() if v["default"]), None)
+        index = default["index"] if default else 0
+    if index >= len(voices):
+        raise HTTPException(status_code=422, detail="Giọng đọc không còn trong danh sách. Vui lòng chọn lại.")
+    identifier = str(_voice_identifier(voices[index]))
+    return model.get_preset_voice(identifier), identifier
+
+
 def _supported_kwargs(callable_obj, values: dict[str, Any]) -> dict[str, Any]:
     try:
         signature = inspect.signature(callable_obj)
@@ -169,6 +204,13 @@ def _supported_kwargs(callable_obj, values: dict[str, Any]) -> dict[str, Any]:
     if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return values
     return {key: value for key, value in values.items() if key in parameters}
+
+
+def _module_dtype(module) -> str | None:
+    try:
+        return str(next(module.parameters()).dtype)
+    except (AttributeError, StopIteration, TypeError):
+        return None
 
 
 def _as_float32_mono(audio: Any) -> np.ndarray:
@@ -194,7 +236,11 @@ def _resolve_generation_mode(requested: str) -> str:
 def _model_init_kwargs() -> dict[str, Any]:
     if (VIENEU_DEVICE, VIENEU_BACKEND) not in {("cpu", "onnx"), ("cuda", "pytorch")}:
         raise RuntimeError("Use cpu/onnx or cuda/pytorch for VieNeu v3 Turbo")
-    values: dict[str, Any] = {"mode": VIENEU_MODE, "backend": VIENEU_BACKEND}
+    if SAMPLE_RATE != 48000 or ONNX_PRECISION not in {"fp32", "int8"}:
+        raise RuntimeError("VieNeu v3 Turbo requires 48000 Hz and fp32/int8 ONNX precision")
+    values: dict[str, Any] = {"mode": VIENEU_MODE, "backend": VIENEU_BACKEND,
+                              "max_streams": MAX_STREAMS, "threads": CPU_THREADS,
+                              "precision": ONNX_PRECISION}
     if VIENEU_DEVICE == "cuda":
         import torch
         if not torch.cuda.is_available():
@@ -212,7 +258,7 @@ def _model_init_kwargs() -> dict[str, Any]:
         # a silent main-branch update while preserving the selected checkpoint.
         values["backbone_repo"] = str(pinned)
         if VIENEU_BACKEND == "onnx":
-            onnx_dir = pinned / "onnx_int8"
+            onnx_dir = pinned / ("onnx_int8" if ONNX_PRECISION == "int8" else "onnx_update")
             if not onnx_dir.is_dir():
                 raise RuntimeError(f"Pinned TTS ONNX directory is missing: {onnx_dir}")
             values["onnx_dir"] = str(onnx_dir)
@@ -255,14 +301,20 @@ def iter_model_audio_traced(
          "max_chars": max(STREAM_MAX_CHARS, len(text) + 1) if pre_chunked else STREAM_MAX_CHARS},
     )
     yielded = False
-    for audio_chunk in stream_fn(**kwargs):
-        model_yield_ns = time.time_ns()
-        if audio_chunk is None:
-            continue
-        samples = np.asarray(audio_chunk)
-        if samples.size:
-            yielded = True
-            yield _as_float32_mono(samples), model_yield_ns
+    iterator = iter(stream_fn(**kwargs))
+    try:
+        for audio_chunk in iterator:
+            model_yield_ns = time.time_ns()
+            if audio_chunk is None:
+                continue
+            samples = np.asarray(audio_chunk)
+            if samples.size:
+                yielded = True
+                yield _as_float32_mono(samples), model_yield_ns
+    finally:
+        close = getattr(iterator, "close", None)
+        if callable(close):
+            close()  # Releases upstream continuous-stream slot on cancellation.
     if not yielded:
         raise RuntimeError("VieNeu infer_stream() produced no audio")
 
@@ -328,7 +380,7 @@ def _measure_stream(text: str, selected_voice: Any) -> dict[str, Any]:
 def _run_warmup() -> dict[str, Any]:
     if not voices:
         raise RuntimeError("No preset voices available for warmup")
-    voice_index = min(WARMUP_VOICE_INDEX, len(voices) - 1)
+    voice_index = next((v["index"] for v in voice_options() if v["default"]), min(WARMUP_VOICE_INDEX, len(voices) - 1))
     selected_voice = model.get_preset_voice(_voice_identifier(voices[voice_index]))
 
     # V10 primes both interactive-short and steady-state unit shapes. V9 only
@@ -403,6 +455,8 @@ async def lifespan(app: FastAPI):
         with _pinned_huggingface_downloads():
             init_kwargs = _model_init_kwargs()
             model = Vieneu(**init_kwargs)
+        if int(getattr(model, "sample_rate", SAMPLE_RATE)) != 48000:
+            raise RuntimeError("VieNeu model did not resolve to 48000 Hz")
         loaded_backbone_revision = Path(init_kwargs.get("backbone_repo", "")).name or None
         voices = list(model.list_preset_voices())
         load_time_seconds = time.perf_counter() - started
@@ -414,6 +468,9 @@ async def lifespan(app: FastAPI):
                 "TTS backend differs from selected runtime; "
                 f"resolved backend was {resolved_backend!r}"
             )
+        expected_version = os.getenv("TTS_EXPECTED_VERSION")
+        if expected_version and _package_version("vieneu") != expected_version:
+            raise RuntimeError("VieNeu installed version differs from the runtime manifest")
         if not streaming_supported:
             raise RuntimeError("V10 realtime requires VieNeu infer_stream()")
 
@@ -444,7 +501,8 @@ app = FastAPI(title="Eureka V10 TTS API", version="0.10.0", lifespan=lifespan)
 
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=10_000)
-    voice_index: int = Field(default=2, ge=0)
+    voice_index: int | None = Field(default=None, ge=0)
+    voice_id: str | None = Field(default=None, min_length=1, max_length=128)
     pre_chunked: bool = True
     generation_mode: Literal["auto", "stream", "sentence"] = "stream"
     trace_framed: bool = False
@@ -457,8 +515,19 @@ def health_live():
     return {"status": "alive", "profile": TTS_PROFILE, "pipeline": "v10"}
 
 
+@app.get("/api/voices")
+def list_voices():
+    if model is None or not voices:
+        raise HTTPException(status_code=503, detail="Danh sách giọng đọc chưa sẵn sàng.")
+    return {"voices": voice_options(), "upstream_commit": UPSTREAM_COMMIT,
+            "sample_rate": SAMPLE_RATE}
+
+
 @app.get("/health/ready")
 def health_ready():
+    scheduler = getattr(model, "_stream_sched", None)
+    if scheduler is not None and getattr(scheduler, "error", None) is not None:
+        raise HTTPException(status_code=503, detail="TTS streaming worker failed; restart the TTS service")
     if model is None or not voices:
         raise HTTPException(
             status_code=503,
@@ -481,6 +550,12 @@ def health_ready():
         "streaming_supported": streaming_supported,
         "streaming_mode": "frame-pcm" if streaming_supported else "unavailable",
         "backend": resolved_backend,
+        "precision": ONNX_PRECISION if VIENEU_BACKEND == "onnx" else "float16",
+        "backbone_dtype": _module_dtype(getattr(getattr(model, "engine", None), "model", None)),
+        "codec_dtype": _module_dtype(getattr(getattr(model, "engine", None), "audio_tokenizer", None)),
+        "max_streams": MAX_STREAMS if VIENEU_BACKEND == "pytorch" else 1,
+        "cpu_threads": CPU_THREADS,
+        "cuda_graph_streaming": scheduler is not None,
         "device_policy": f"{VIENEU_DEVICE}/{VIENEU_BACKEND}-pinned",
         "device": str(getattr(getattr(model, "engine", None), "device", VIENEU_DEVICE)),
         "runtime_profile": os.getenv("RUNTIME_PROFILE"),
@@ -560,15 +635,16 @@ def generate_tts(request: TTSRequest):
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=422, detail="text must not be blank")
-    if request.voice_index >= len(voices):
-        raise HTTPException(status_code=422, detail=f"voice_index must be in [0, {len(voices) - 1}]")
-
     try:
-        selected_voice = model.get_preset_voice(_voice_identifier(voices[request.voice_index]))
+        selected_voice, selected_name = resolve_voice(request)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Could not resolve preset voice: {exc}") from exc
 
     generation_mode = _resolve_generation_mode(request.generation_mode)
+    if not _stream_slots.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Giọng đọc đang bận, vui lòng thử lại.", headers={"Retry-After": "1"})
 
     def audio_stream_generator() -> Iterator[bytes]:
         sequence = 0
@@ -593,8 +669,36 @@ def generate_tts(request: TTSRequest):
             else:
                 yield raw
 
-    return StreamingResponse(
-        audio_stream_generator(),
+    released = False
+
+    def release_slot():
+        nonlocal released
+        if not released:
+            released = True
+            _stream_slots.release()
+
+    async def closing_stream():
+        iterator = audio_stream_generator()
+        try:
+            async for chunk in iterate_in_threadpool(iterator):
+                yield chunk
+        finally:
+            # Cancellation must close infer_stream, including its CUDA slot,
+            # rather than letting an abandoned utterance continue generating.
+            try:
+                iterator.close()
+            finally:
+                release_slot()
+
+    class LeasedStreamingResponse(StreamingResponse):
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                release_slot()
+
+    return LeasedStreamingResponse(
+        closing_stream(),
         media_type="application/octet-stream",
         headers={
             "X-Audio-Sample-Rate": str(SAMPLE_RATE),

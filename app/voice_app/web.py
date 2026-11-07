@@ -543,6 +543,13 @@ def create_app():
             },
         }
 
+    @app.get("/api/voices")
+    def read_voices():
+        try:
+            return orchestrator.tts.list_voices()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Chưa tải được danh sách giọng đọc. Vui lòng thử lại.") from exc
+
     @app.post("/api/turn/text")
     def start_text(request: TextTurnRequest):
         try:

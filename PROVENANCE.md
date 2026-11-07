@@ -13,3 +13,5 @@ Các thành phần sử dụng các nguồn và revision sau. Thông tin này ph
 ## Môi trường giọng đọc
 
 VieNeu-TTS được ghim theo repository và commit trong `services/tts/runtime.json`, tái lập bằng `uv sync --frozen`. Giữ nguyên thông tin tác giả và giấy phép của các thư viện/model được sử dụng.
+
+Ngày 07/11/2026: SDK VieNeu nâng từ 3.3.0 (`36c4b501b0634a8f59805e6b529a058fbd30190b`) lên 3.8.3 (`6cdb62e03e6a9fd6ebff70e77aff8570c50949c3`) từ upstream chính thức `pnnbao97/VieNeu-TTS`. Giữ v3 Turbo và revision các trọng số backbone/codec; preset lấy từ asset của commit mới. Thông tin kiểm thử trong `docs/VIENEU_383_UPGRADE.md`.

@@ -8,6 +8,7 @@ mkdir -p "$STORAGE/tmp" "$STORAGE/cache" "$STORAGE/runtime" "$STORAGE/logs"
 export TMPDIR="$STORAGE/tmp" TMP="$STORAGE/tmp" TEMP="$STORAGE/tmp"
 export PIP_CACHE_DIR="$STORAGE/cache/pip" UV_CACHE_DIR="$STORAGE/cache/uv"
 export UV_PYTHON_INSTALL_DIR="$STORAGE/python" XDG_CACHE_HOME="$STORAGE/cache"
+export UV_PYTHON_BIN_DIR="$STORAGE/tools"
 export HF_HOME="$STORAGE/cache/huggingface" TORCH_HOME="$STORAGE/cache/torch"
 export HF_HUB_CACHE="$HF_HOME/hub" HF_MODULES_CACHE="$HF_HOME/modules"
 export PYTHONPYCACHEPREFIX="$STORAGE/cache/pycache"
@@ -64,8 +65,10 @@ UV_PROJECT_ENVIRONMENT="$VENVS/tts" UV_PYTHON="$PYTHON_VERSION" "$UV" sync --pro
 "$UV" pip install --python "$VENVS/tts/bin/python" "fastapi>=0.115,<1" "uvicorn[standard]>=0.30,<1" "pydantic>=2.8,<3" "pytest>=8,<10"
 # The pinned upstream defaults to a torch-free CPU environment. Colab's GPU
 # profile uses the SAME VieNeu model with its published PyTorch CUDA backend.
-"$UV" pip install --python "$VENVS/tts/bin/python" --index-url https://download.pytorch.org/whl/cu128 "torch==2.8.0" "torchaudio==2.8.0"
-"$UV" pip install --python "$VENVS/tts/bin/python" "transformers>=4.51,<5" "accelerate>=1,<2" "safetensors>=0.4,<1"
+TTS_TORCH_CUDA="${TTS_TORCH_CUDA:-cu126}"
+"$UV" pip install --python "$VENVS/tts/bin/python" --index-url "https://download.pytorch.org/whl/$TTS_TORCH_CUDA" "torch==2.8.0" "torchaudio==2.8.0"
+"$UV" pip install --python "$VENVS/tts/bin/python" "transformers==4.57.6" "accelerate>=1,<2" "safetensors>=0.4,<1"
+"$VENVS/tts/bin/python" -c 'import importlib.metadata; assert importlib.metadata.version("vieneu")=="3.8.3"'
 "$VENVS/tts/bin/python" -c 'import torch; assert torch.cuda.is_available(), "Enable a Colab GPU runtime before setup; CUDA is not available"'
 
 echo "==> Pinned TTS artifacts (clean-cache reproducibility)"

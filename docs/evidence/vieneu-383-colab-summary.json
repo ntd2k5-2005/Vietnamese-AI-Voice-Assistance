@@ -1,0 +1,44 @@
+{
+  "before": {
+    "turns": 3,
+    "tts_units": 6,
+    "median_http_ttfb_ms": 379.3605044998003,
+    "median_http_rtf": 0.9801352826479584,
+    "median_browser_first_pcm_ms": 5406,
+    "median_server_pcm_hold_ms": 2623.286816,
+    "server_pcm_hold_ms": [
+      2918.844968,
+      2310.214165,
+      2623.286816
+    ],
+    "sequence_errors": 0,
+    "underruns": 0,
+    "page_errors": [],
+    "failures": 0
+  },
+  "after": {
+    "turns": 3,
+    "tts_units": 6,
+    "median_http_ttfb_ms": 166.77038799980437,
+    "median_http_rtf": 0.5533563508044972,
+    "median_browser_first_pcm_ms": 2707.39999999851,
+    "median_server_pcm_hold_ms": 0.121347,
+    "server_pcm_hold_ms": [
+      0.147714,
+      0.121347,
+      0.11757
+    ],
+    "sequence_errors": 0,
+    "underruns": 0,
+    "page_errors": [],
+    "failures": 0
+  },
+  "caveat": "Observational same-question demo; voices/LLM wording differ. Not a matched waveform or fixed-seed A/B. Browser timing is request-to-PCM, not acoustic speaker onset or LLM TTFT.",
+  "date": "2026-11-07",
+  "upstream_commit": "6cdb62e03e6a9fd6ebff70e77aff8570c50949c3",
+  "sdk_before": "3.3.0",
+  "sdk_after": "3.8.3",
+  "pcm_hz": 48000,
+  "voices": 25,
+  "scope": "Observed Colab demo and live browser; not a fixed-waveform matched A/B or physical speaker measurement"
+}

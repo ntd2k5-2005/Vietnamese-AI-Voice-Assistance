@@ -32,6 +32,9 @@ def serve(buffered):
             yield {"type": "done", "metrics": {}}
 
     class TTS(SlowTTS):
+        def list_voices(self):
+            return {"voices": [{"id": "fixture", "name": "Giọng kiểm thử", "label": "Giọng kiểm thử", "index": 0, "default": True}]}
+
         def stream_native_pcm(self, text, **kwargs):
             # Deliberately slower than realtime, same samples and schedule
             # across both runs: demonstrate starvation, not model performance.

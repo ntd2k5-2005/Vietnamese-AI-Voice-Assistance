@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from runtime_config import load_manifest, load_profile, service_environments
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BACKBONE_FILES = (
+INT8_BACKBONE_FILES = (
     "onnx_int8/vieneu_prefill.onnx",
     "onnx_int8/vieneu_decode_step.onnx",
     "onnx_int8/vieneu_acoustic_cached.onnx",
@@ -17,6 +18,7 @@ BACKBONE_FILES = (
     "onnx_int8/config.json",
     "onnx_int8/tokenizer.json",
 )
+BACKBONE_FILES = tuple(name.replace("onnx_int8/", "onnx_update/") for name in INT8_BACKBONE_FILES)
 CODEC_FILES = (
     "moss_audio_tokenizer_decode_full.onnx",
     "moss_audio_tokenizer_decode_shared.data",
@@ -73,11 +75,14 @@ def prefetch_tts(
 
     tts = manifest["components"]["tts"]
     gpu = profile["placement"]["tts"]["device"] == "cuda"
+    precision = os.getenv("TTS_ONNX_PRECISION", tts.get("onnx_precision", "fp32"))
+    if precision not in {"fp32", "int8"}:
+        raise ValueError("TTS_ONNX_PRECISION must be fp32 or int8")
     specs = {
         "backbone": (
             str(tts["backbone_model_id"]),
             str(tts["backbone_revision"]),
-            GPU_BACKBONE_FILES if gpu else BACKBONE_FILES,
+            GPU_BACKBONE_FILES if gpu else (INT8_BACKBONE_FILES if precision == "int8" else BACKBONE_FILES),
         ),
         "codec": (
             str(tts["gpu_codec_model_id"] if gpu else tts["codec_model_id"]),

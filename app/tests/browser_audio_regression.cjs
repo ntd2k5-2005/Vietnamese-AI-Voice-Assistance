@@ -143,6 +143,21 @@ async function main() {
   assert.equal(vm.runInContext(`friendlyError('<!DOCTYPE html><html>524</html>')`,textSync).includes('<html>'),false);
   results.push('text follows consumed audio frames, pauses with buffering and flushes final punctuation');
 
+  const earlyText = browser();
+  vm.runInContext(`
+    currentTurn='native'; captureText=[]; updateAssistant=(_id,text)=>captureText.push(text);
+    speechUnit(1).text='Xin chào bạn.'; speechUnit(1).startFrame=0;
+    spokenFrames=100; revealSpokenText();
+  `,earlyText);
+  const provisional = earlyText.captureText.at(-1);
+  assert.ok(provisional.length>0 && provisional.length<'Xin chào bạn.'.length,
+    'native audio can reveal a prefix before total duration is known');
+  vm.runInContext(`revealSpokenText()`,earlyText);
+  assert.equal(earlyText.captureText.at(-1),provisional,'no consumed frames means no text progress');
+  vm.runInContext(`speechUnit(1).totalFrames=2000; revealSpokenText()`,earlyText);
+  assert.equal(earlyText.captureText.at(-1),provisional,'duration reconciliation must not erase visible text');
+  results.push('provisional native-stream text uses consumed frames and never regresses');
+
   let Worklet;
   const messages = [];
   const worklet = vm.createContext({sampleRate:1000, Float32Array, Uint8Array, ArrayBuffer, DataView,

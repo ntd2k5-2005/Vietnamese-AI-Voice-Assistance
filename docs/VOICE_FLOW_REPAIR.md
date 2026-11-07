@@ -1,5 +1,7 @@
 # Sửa luồng giọng nói
 
+**Ghi chép lịch sử của đợt sửa trước.** Bản hiện tại đã nâng VieNeu lên 3.8.3 và mặc định chuyển PCM ngay từng khung; xem [kết quả nâng cấp và đo Colab](VIENEU_383_UPGRADE.md). Các số liệu và giới hạn bên dưới thuộc đợt cũ.
+
 Lỗi đã tái hiện bằng kiểm thử: `TurnManager.next_audio()` hết thời gian chờ nhưng tiếp tục vòng lặp trong khi giữ `audio_condition`. Producer không lấy được khóa để nạp PCM, thao tác hủy cũng có thể bị kẹt; điều này phù hợp hiện tượng LLM xong nhưng không có audio và HTTP hủy bị Cloudflare timeout. Bản sửa trả về khi hết hạn chờ; WebSocket phát keepalive rồi chờ tiếp, chỉ gửi end khi producer thực sự kết thúc. Không coi 15 giây chưa có audio là hết câu trả lời.
 
 Luồng hiện tại:

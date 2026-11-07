@@ -66,9 +66,10 @@ class AppSettings(BaseSettings):
     tts_channels: int = 1
     tts_dtype: str = "float32"
     tts_generation_mode: str = "stream"
-    # Buffer one bounded speech unit, then let synthesis of the next overlap
-    # browser playback. Avoid starving the player inside a spoken sentence.
-    tts_buffer_complete_units: bool = True
+    # Forward each native PCM frame immediately. AudioWorklet owns the bounded
+    # playout cushion; waiting for a complete unit hid fast first TTS frames.
+    # Keep the explicit option for slow-CPU A/B measurements, never auto-enable.
+    tts_buffer_complete_units: bool = False
     tts_segmentation_mode: Literal["sentence", "adaptive"] = "sentence"
 
     # Legacy V6/V7 compatibility chunk settings. V8 direct media does not use

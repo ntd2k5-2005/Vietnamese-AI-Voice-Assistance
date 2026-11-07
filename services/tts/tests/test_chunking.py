@@ -125,7 +125,8 @@ def test_v10_runtime_is_onnx_streaming_profile(monkeypatch):
     assert 176 <= api.STREAM_MAX_CHARS <= 224
     monkeypatch.setattr(api, "TTS_BACKBONE_MODEL_ID", None)
     monkeypatch.setattr(api, "TTS_BACKBONE_REVISION", None)
-    assert api._model_init_kwargs() == {"mode": api.VIENEU_MODE, "backend": "onnx"}
+    assert api._model_init_kwargs() == {"mode": api.VIENEU_MODE, "backend": "onnx",
+                                       "precision": "fp32", "threads": api.CPU_THREADS, "max_streams": api.MAX_STREAMS}
 
 
 def test_model_init_uses_exact_pinned_snapshot(monkeypatch, tmp_path):
@@ -133,9 +134,9 @@ def test_model_init_uses_exact_pinned_snapshot(monkeypatch, tmp_path):
     monkeypatch.setattr(api, "TTS_BACKBONE_REVISION", "abc123")
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     snapshot = tmp_path / "hub" / "models--org--model" / "snapshots" / "abc123"
-    (snapshot / "onnx_int8").mkdir(parents=True)
+    (snapshot / "onnx_update").mkdir(parents=True)
     assert api._model_init_kwargs()["backbone_repo"] == str(snapshot.resolve())
-    assert api._model_init_kwargs()["onnx_dir"] == str((snapshot / "onnx_int8").resolve())
+    assert api._model_init_kwargs()["onnx_dir"] == str((snapshot / "onnx_update").resolve())
 
 
 def test_missing_pinned_snapshot_fails_fast(monkeypatch, tmp_path):

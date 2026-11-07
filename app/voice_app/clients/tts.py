@@ -102,6 +102,15 @@ class TTSClient:
     def close(self) -> None:
         self.client.close()
 
+    def list_voices(self) -> dict:
+        try:
+            response = self.client.get(f"{self.base_url}/api/voices")
+            if response.status_code != 200:
+                raise response_error(self.service_name, response)
+            return expect_json_object(self.service_name, response)
+        except httpx.HTTPError as exc:
+            raise ServiceError(self.service_name, "Danh sách giọng đọc chưa sẵn sàng") from exc
+
     def health(self) -> ServiceStatus:
         started = time.perf_counter()
         try:
