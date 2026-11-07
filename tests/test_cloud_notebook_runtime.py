@@ -190,11 +190,3 @@ def test_notebook_is_standalone_and_has_no_saved_outputs():
             tree = ast.parse("".join(cell["source"]))
             assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                            and node.func.attr == "stop" for node in ast.walk(tree))
-
-
-
-
-
-
-
-
